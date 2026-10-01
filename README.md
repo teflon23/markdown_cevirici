@@ -23,23 +23,21 @@ python -m unittest -v test_pipeline
 
 Çıktı dizini yeni olmalıdır; mevcut çalışma üzerine yazılmaz. Çıkış kodları: `0` doğrulama/yayımlama başarılı, `1` çalışma hatası, `2` kelime muhasebesi başarısız, `3` dönüşüm tamamlandı fakat anlamsal inceleme gerekli. `verify` komutunun `0` dönmesi, anlamsal doğruluk onayı değildir. Marj bandı gerekirse `--margin-fraction 0.12` ile daraltılabilir; varsayılan üst/alt yüzde 16'dır. Sayfa görsellerinin çözünürlüğü `--dpi 150` ile değiştirilebilir.
 
-## Artifactory üzerinden kurulum
+## Kurulum
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --index-url "https://ARTIFACTORY-SUNUCUSU/artifactory/api/pypi/PYTHON-DEPOSU/simple" -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m unittest -v test_pipeline
 ```
 
-Adres yer tutucudur; kurumunuzun verdiği pip index adresiyle değiştirin. Kurumunuz pip'i zaten Artifactory için yapılandırdıysa `--index-url` parametresini atlayabilirsiniz. Ek genel paket deposu tanımlamayın; kimlik doğrulama ve kurum sertifikaları için kurumunuzun yöntemini kullanın. Şifre, token ve yerel pip yapılandırmasını Git'e eklemeyin.
+## Çevrimdışı kurulum
 
-## Air-gap kurulumu
-
-Yeni air-gap makine için hedef işletim sistemi ve Python sürümüyle uyumlu bağımlılık paketlerini güvenilir hazırlık makinesinde kurumunuzun onayladığı depodan önceden temin edin. Hazırlık aşaması ağ erişimi gerektirebilir; air-gap çalıştırma aşaması gerektirmez.
+İnternetsiz bir bilgisayarda kullanmak için hedef işletim sistemi ve Python sürümüyle uyumlu bağımlılık paketlerini önceden indirin. Dönüştürme işlemi ağ bağlantısı gerektirmez.
 
 ```text
 # Yalnızca dışarıdaki hazırlık makinesinde:
-python -m pip download --index-url "https://ARTIFACTORY-SUNUCUSU/artifactory/api/pypi/PYTHON-DEPOSU/simple" --dest wheelhouse -r requirements.txt
+python -m pip download --dest wheelhouse -r requirements.txt
 # Wheelhouse ile requirements.txt dosyasını kontrollü şekilde hedefe taşıdıktan sonra:
 python -m pip install --no-index --find-links=wheelhouse -r requirements.txt
 ```
