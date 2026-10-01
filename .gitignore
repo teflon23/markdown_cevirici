@@ -1,0 +1,32 @@
+# Source documents and generated content must never be published.
+output/
+tmp/
+dist/
+publish/
+input/
+inputs/
+documents/
+*.pdf
+*.PDF
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.jsonl
+*.jsonl.gz
+*.zip
+
+# Local environments, credentials and machine-specific configuration.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+pip.ini
+pip.conf
+*.pem
+*.key
+.pytest_cache/
+.idea/
+.vscode/
