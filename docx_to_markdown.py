@@ -30,6 +30,58 @@ M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 TEXT_TAGS = {W+'t', W+'delText', W+'instrText', W+'delInstrText', A+'t', M+'t'}
 LOG = logging.getLogger("docx_ingest")
+BLOCKING_ISSUES = {'unresolved_numbering', 'unsupported_number_format',
+                   'broken_note_reference', 'unsupported_embedded_content',
+                   'textbox_or_equation_requires_review', 'wrapped_table_fallback',
+                   'nested_table_flattened_requires_review', 'no_recognized_text_requires_review'}
+
+
+def note_info(ancestors: list[tuple[str, dict[str, str]]]) -> dict[str, str] | None:
+    """An ID is an identifier, never an implicit separator type."""
+    for tag, attrs in ancestors:
+        if tag in {W+'footnote', W+'endnote', W+'comment'}:
+            return {'kind':tag.split('}')[1], 'id':attrs.get(W+'id',''),
+                    'type':attrs.get(W+'type','normal')}
+    return None
+
+
+def story_target(part: str, ancestors: list[tuple[str, dict[str, str]]]) -> str:
+    target = 'candidate' if part in {'word/document.xml','word/footnotes.xml','word/endnotes.xml'} else 'supplementary'
+    note = note_info(ancestors)
+    if note and note['kind'] != 'comment' and note['type'] != 'normal':
+        target = 'supplementary'
+    if any(tag in {W+'del', W+'moveFrom', W+'txbxContent', M+'oMath', M+'oMathPara'} or tag.endswith('}AlternateContent')
+           for tag, _ in ancestors):
+        target = 'supplementary'
+    return target
+
+
+def legal_heading(text: str) -> tuple[int,str] | None:
+    """Anchored legal structure; generated headings do not replace source text."""
+    clean = ' '.join(text.split())
+    if re.fullmatch(r'[A-ZÇĞİÖŞÜ0-9 ]+ BÖLÜM',clean):
+        return 1,clean
+    if re.fullmatch(r'(?:CHAPTER|ANNEX|PART|TITLE)\s+[IVXLCDM\d]+',clean,re.I):
+        return 1,clean
+    article = re.match(r'((?:(?:GEÇİCİ|EK)\s+)?MADDE\s+\d+[A-Z]?)\s*[-–—:]',clean)
+    if article:
+        return 2,article[1]
+    # Some exported documents put the short caption and article in one paragraph.
+    captioned = re.match(r'^[A-Za-zÇĞİÖŞÜçğıöşü ]{1,80}?\s+((?:(?:GEÇİCİ|EK)\s+)?MADDE\s+\d+[A-Z]?)\s*[-–—:]\s*\(1\)',clean)
+    if captioned:
+        return 2,captioned[1]
+    if re.fullmatch(r'Article\s+\d+(?:\.\d+)*',clean,re.I):
+        return 2,clean
+    return None
+
+
+def prose_row(row: ET.Element, columns: int) -> bool:
+    cells = row.findall(W+'tc')
+    if len(cells) != 1 or int(val(cells[0],f'{W}tcPr/{W}gridSpan','1')) != columns:
+        return False
+    paragraphs = cells[0].findall(W+'p')
+    return len(paragraphs) >= 3 and any(legal_heading(''.join(n.text or '' for n in p.iter(W+'t')))
+                                        for p in paragraphs)
 
 
 @dataclass(frozen=True)
@@ -185,6 +237,11 @@ class Structure:
         self.abstract = {n.get(W+'abstractNumId'): n for n in numbering.findall(W+'abstractNum')}
         self.nums = {n.get(W+'numId'): n for n in numbering.findall(W+'num')}
         self.counters: dict[tuple[str, str], dict[int, int]] = {}
+        self.rels_cache: dict[str, dict[str | None, dict[str, str]]] = {}
+        self.notes: dict[str, set[str]] = {}
+        for kind, part in [('footnote','word/footnotes.xml'),('endnote','word/endnotes.xml'),('comment','word/comments.xml')]:
+            self.notes[kind] = {n.get(W+'id','') for n in xml(z,part).findall(W+kind)
+                                if kind == 'comment' or n.get(W+'type','normal') == 'normal'}
 
     def properties(self, p: ET.Element) -> list[ET.Element]:
         props: list[ET.Element] = []
@@ -284,13 +341,31 @@ class Emitter:
     def __init__(self, z: ZipFile, part: str, ids: dict[int, str], structure: Structure,
                  assets: dict[str, str], default_target: str, ancestors: list[tuple[str, dict[str, str]]]) -> None:
         self.part, self.ids, self.structure, self.assets = part, ids, structure, assets
-        self.fragments: list[dict[str, str]] = []
+        self.fragments: list[dict[str, Any]] = []
         self.issues: set[str] = set()
         self.metadata: dict[str, Any] = {'ancestors': ancestors}
         self.default_target = default_target
         relpart = str(PurePosixPath(part).parent / '_rels' / (PurePosixPath(part).name + '.rels'))
-        self.rels = {r.get('Id'): dict(r.attrib) for r in xml(z, relpart)}
+        if part not in structure.rels_cache:
+            structure.rels_cache[part] = {r.get('Id'): dict(r.attrib) for r in xml(z, relpart)}
+        self.rels = structure.rels_cache[part]
         self.parents: dict[int, ET.Element] = {}
+
+    def paragraph_prefix(self, node: ET.Element, target: str, inline: bool) -> None:
+        """One numbering event for EVERY paragraph, including cells and textboxes."""
+        heading = self.structure.heading(node)
+        marker = self.structure.marker(node, self.part+':'+target, self.issues)
+        spec = {'heading':heading, 'label':marker[0] if marker else None,
+                'level':marker[1] if marker else None, 'target':target}
+        index = len(self.metadata.setdefault('paragraphs',[]))
+        self.metadata['paragraphs'].append(spec)
+        if marker:
+            label, level = marker
+            markup = (escape(label)+' ') if heading or inline else ('    '*level+'- **'+escape(label)+'** ')
+            self.fragments.append({'markup':markup,'target':target,'semantic':'numbering',
+                                   'paragraph':index,'label':label})
+            if not inline:
+                self.metadata['numbering'] = {'label':label,'level':level}
 
     def generated(self, value: str, target: str | None = None) -> None:
         self.fragments.append({'markup': value, 'target': target or self.default_target})
@@ -298,6 +373,8 @@ class Emitter:
     def emit(self, node: ET.Element, target: str | None = None) -> None:
         target = target or self.default_target
         tag = node.tag
+        if tag == W+'p':
+            self.paragraph_prefix(node,target,inline=True)
         if tag in {W+'del', W+'moveFrom'}:
             self.issues.add('tracked_changes_require_review')
             target = 'supplementary'
@@ -323,9 +400,12 @@ class Emitter:
         if tag in {W+'footnoteReference', W+'endnoteReference', W+'commentReference'}:
             kind = tag.split('}')[1].replace('Reference', '')
             identifier = node.get(W+'id', '')
+            if identifier not in self.structure.notes.get(kind,set()):
+                self.issues.add('broken_note_reference')
             self.metadata.setdefault('references', []).append({'kind': kind, 'id': identifier})
-            destination = 'supplementary.md' if kind == 'comment' else ''
-            self.generated(f' [{kind} {escape(identifier)}]({destination}#{kind}-{quote(identifier)}) ', target)
+            destination = 'supplementary.md' if kind == 'comment' else ('candidate.md' if target == 'supplementary' else '')
+            self.fragments.append({'markup':f' [{kind} {escape(identifier)}]({destination}#{kind}-{quote(identifier)}) ',
+                                   'target':target,'semantic':'note_reference','kind':kind,'note_id':identifier})
         if tag == W+'hyperlink':
             relation = self.rels.get(node.get(R+'id'), {})
             url = relation.get('Target', '') if relation.get('TargetMode') == 'External' else ''
@@ -353,11 +433,11 @@ class Emitter:
             else:
                 marker = ''
             if marker:
-                self.generated(marker, target)
+                self.fragments.append({'markup':marker,'target':target,'format_edge':'open'})
             for child in node:
                 self.emit(child, target)
             if marker:
-                self.generated(marker, target)
+                self.fragments.append({'markup':marker,'target':target,'format_edge':'close'})
             return
         if tag == A+'blip':
             rid = node.get(R+'embed') or node.get(R+'link')
@@ -386,6 +466,27 @@ class Emitter:
         if tag == W+'p':
             self.generated('<br>', target)
 
+    def paragraph(self, node: ET.Element) -> None:
+        heading = self.structure.heading(node)
+        raw = ''.join(n.text or '' for n in node.iter(W+'t'))
+        legal = legal_heading(raw)
+        if legal:
+            level,title = legal
+            markup = '#'*level+' ' if raw.strip()==title else '#'*level+' '+escape(title)+'\n\n'
+            self.fragments.append({'markup':markup,
+                                   'target':self.default_target,'semantic':'legal_heading',
+                                   'level':level,'title':title})
+            self.metadata.setdefault('legal_headings',[]).append({'level':level,'title':title})
+            heading = None
+        if heading:
+            self.fragments.append({'markup':'#'*heading+' ','target':self.default_target,
+                                   'semantic':'heading','level':heading})
+            self.metadata['heading_level'] = heading
+        self.paragraph_prefix(node,self.default_target,inline=False)
+        for child in node:
+            self.emit(child)
+        self.generated('\n\n')
+
     def block(self, node: ET.Element) -> dict[str, Any]:
         self.parents = {id(child): parent for parent in node.iter() for child in parent}
         for tag, _ in self.metadata['ancestors']:
@@ -397,23 +498,7 @@ class Emitter:
         if node.tag == W+'tbl':
             self.table(node)
         elif node.tag == W+'p':
-            heading = self.structure.heading(node)
-            marker = self.structure.marker(node, self.part, self.issues)
-            raw = ''.join(n.text or '' for n in node.iter(W+'t'))
-            if heading is None and re.fullmatch(r'(?:CHAPTER|ANNEX|PART|TITLE)\s+[IVXLCDM\d]+', raw, re.I):
-                heading = 1
-            if heading is None and re.fullmatch(r'Article\s+\d+(?:\.\d+)*', raw, re.I):
-                heading = 2
-            if heading:
-                self.generated('#'*heading+' ')
-                self.metadata['heading_level'] = heading
-            if marker:
-                label, level = marker
-                self.metadata['numbering'] = {'label': label, 'level': level}
-                self.generated((escape(label)+' ') if heading else ('    '*level+'- **'+escape(label)+'** '))
-            for child in node:
-                self.emit(child)
-            self.generated('\n\n')
+            self.paragraph(node)
         else:
             self.issues.add('orphan_text_retained')
             self.emit(node, 'supplementary')
@@ -443,12 +528,22 @@ class Emitter:
         columns = max(widths)
         if not 1 <= columns <= 256:
             raise ValueError('Unsupported table grid width')
-        self.generated('| '+' | '.join(f'Column {n+1}' for n in range(columns))+' |\n')
-        self.generated('| '+' | '.join('---' for _ in range(columns))+' |\n')
+        table_open = False
         topology: list[dict[str, Any]] = []
         for r, row in enumerate(rows):
+            unwrap = prose_row(row,columns)
+            if unwrap:
+                self.issues.add('full_width_prose_row_unwrapped_requires_review')
+                self.metadata.setdefault('unwrapped_rows',[]).append(r)
+                self.generated('\n\n')
+                table_open = False
+            elif not table_open:
+                self.generated('| '+' | '.join(f'Column {n+1}' for n in range(columns))+' |\n')
+                self.generated('| '+' | '.join('---' for _ in range(columns))+' |\n')
+                table_open = True
             column = int(val(row, f'{W}trPr/{W}gridBefore', '0'))
-            self.generated('| ' + ' | '*column)
+            if not unwrap:
+                self.generated('| ' + ' | '*column)
             for cell in row.findall(W+'tc'):
                 span = int(val(cell, f'{W}tcPr/{W}gridSpan', '1'))
                 if not 1 <= span <= 256:
@@ -459,18 +554,60 @@ class Emitter:
                                  'atom_ids': [self.ids[id(n)] for n in cell.iter() if n.tag in TEXT_TAGS]})
                 if span != 1 or merge is not None:
                     self.issues.add('merged_table_cells')
-                self.emit(cell)
-                self.generated(' | '*span)
+                if unwrap:
+                    for child in cell:
+                        if child.tag == W+'p':
+                            self.paragraph(child)
+                        else:
+                            self.emit(child)
+                else:
+                    self.emit(cell)
+                    self.generated(' | '*span)
                 column += span
-            self.generated(' | '*(columns-column)+'\n')
+            if not unwrap:
+                self.generated(' | '*(columns-column)+'\n')
         self.generated('\n')
         self.metadata['table'] = {'columns': columns, 'rows': len(rows), 'cells': topology,
                                   'generated_header': True}
 
 
 def render(record: dict[str, Any], target: str) -> str:
-    return ''.join(escape(f['text']) if 'id' in f else f['markup']
-                   for f in record['fragments'] if f['target'] == target)
+    """Coalesce equal adjacent Word run formatting without changing source text."""
+    selected = [f for f in record['fragments'] if f['target']==target]
+    filtered = []
+    index = 0
+    while index < len(selected):
+        f = selected[index]
+        if (f.get('format_edge')=='close' and index+1<len(selected) and
+                selected[index+1].get('format_edge')=='open' and f['markup']==selected[index+1]['markup']):
+            index += 2
+            continue
+        filtered.append(f)
+        index += 1
+    output: list[str] = []
+    active: str | None = None
+    content: list[str] = []
+    for f in filtered:
+        if f.get('format_edge')=='open':
+            if active is not None:
+                raise ValueError('Overlapping formatting spans')
+            active = f['markup']
+            content = []
+        elif f.get('format_edge')=='close':
+            if active != f['markup']:
+                raise ValueError('Unbalanced formatting spans')
+            value = ''.join(content)
+            core = value.strip(' ')
+            before = value[:len(value)-len(value.lstrip(' '))]
+            after = value[len(value.rstrip(' ')):]
+            output.append(before+active+core+active+after if core else value)
+            active = None
+        else:
+            value = escape(f['text']) if 'id' in f else f['markup']
+            (content if active is not None else output).append(value)
+    if active is not None:
+        raise ValueError('Unclosed formatting span')
+    return ''.join(output)
 
 
 def account(db: sqlite3.Connection, record: dict[str, Any]) -> None:
@@ -486,6 +623,127 @@ def account(db: sqlite3.Connection, record: dict[str, Any]) -> None:
             raise ValueError('Source text order changed: '+f['id'])
         db.execute('INSERT OR REPLACE INTO positions(part,last) VALUES (?,?)',(part,int(index)))
         db.execute('UPDATE atoms SET used=1 WHERE id=?', (f['id'],))
+
+
+def structural_expectations(z: ZipFile) -> Iterator[dict[str, Any]]:
+    """Independent traversal: derive paragraph/list/note/grid facts from XML.
+
+    Number-format resolution is shared and separately regression-tested. This
+    pass does not trust emitted metadata or infer structure from output text.
+    """
+    resolver = Structure(z)
+    parts = sorted(n for n in z.namelist() if n.endswith('.xml'))
+    parts.remove('word/document.xml')
+    parts.insert(0,'word/document.xml')
+    for part in parts:
+        for root, ids, ancestors in blocks(z,part):
+            parents = {id(child):parent for parent in root.iter() for child in parent}
+            def lineage(n: ET.Element) -> list[tuple[str,dict[str,str]]]:
+                chain: list[tuple[str,dict[str,str]]] = []
+                parent = parents.get(id(n))
+                while parent is not None:
+                    chain.append((parent.tag,dict(parent.attrib)))
+                    parent = parents.get(id(parent))
+                return ancestors+list(reversed(chain))
+            paragraphs = []
+            for p in root.iter(W+'p'):
+                target = story_target(part,lineage(p))
+                label = resolver.marker(p,part+':'+target,set())
+                paragraphs.append({'heading':resolver.heading(p),'label':label[0] if label else None,
+                                   'level':label[1] if label else None,'target':target})
+            destinations = {}
+            for n in root.iter():
+                if n.tag not in TEXT_TAGS:
+                    continue
+                destination = story_target(part,lineage(n))
+                if n.tag in {W+'delText',W+'instrText',W+'delInstrText',A+'t',M+'t'}:
+                    destination = 'supplementary'
+                parent = parents.get(id(n))
+                while parent is not None:
+                    if parent.tag == W+'r':
+                        pr = parent.find(W+'rPr')
+                        if pr is not None and (enabled(pr.find(W+'vanish')) or enabled(pr.find(W+'webHidden'))):
+                            destination = 'supplementary'
+                    parent = parents.get(id(parent))
+                destinations[ids[id(n)]] = destination
+            references = [{'kind':n.tag.split('}')[1].replace('Reference',''),'id':n.get(W+'id','')}
+                          for n in root.iter() if n.tag in {W+'footnoteReference',W+'endnoteReference',W+'commentReference'}]
+            table = None
+            unwrapped = []
+            heading_paragraphs = [root] if root.tag==W+'p' else []
+            if root.tag == W+'tbl':
+                rows = root.findall(W+'tr')
+                cells = []
+                widths = []
+                for r,row in enumerate(rows):
+                    col = int(val(row,f'{W}trPr/{W}gridBefore','0'))
+                    for tc in row.findall(W+'tc'):
+                        span = int(val(tc,f'{W}tcPr/{W}gridSpan','1'))
+                        merge = tc.find(f'{W}tcPr/{W}vMerge')
+                        cells.append({'row':r,'column':col,'span':span,
+                                      'vmerge':merge.get(W+'val','continue') if merge is not None else None,
+                                      'atom_ids':[ids[id(n)] for n in tc.iter() if n.tag in TEXT_TAGS]})
+                        col += span
+                    widths.append(col+int(val(row,f'{W}trPr/{W}gridAfter','0')))
+                if rows:
+                    table = {'columns':max(widths),'rows':len(rows),'cells':cells,'generated_header':True}
+                    unwrapped = [i for i,row in enumerate(rows) if prose_row(row,table['columns'])]
+                    heading_paragraphs.extend(p for i in unwrapped for tc in rows[i].findall(W+'tc') for p in tc.findall(W+'p'))
+            legal = [{'level':h[0],'title':h[1]} for p in heading_paragraphs
+                     if (h:=legal_heading(''.join(n.text or '' for n in p.iter(W+'t'))))]
+            yield {'part':part,'paragraphs':paragraphs,'references':references,'table':table,
+                   'note':note_info(ancestors),'target':story_target(part,ancestors),
+                   'destinations':destinations,'legal_headings':legal,'unwrapped_rows':unwrapped}
+
+
+def audit_structure(record: dict[str, Any], expected: dict[str, Any]) -> None:
+    """A missing generated list marker must fail even when all text survived."""
+    meta = record['metadata']
+    if record['part'] != expected['part'] or meta.get('paragraphs',[]) != expected['paragraphs']:
+        raise ValueError('Source paragraph/list structure mismatch')
+    if meta.get('note') != expected['note']:
+        raise ValueError('Source note type/identity mismatch')
+    for f in record['fragments']:
+        if 'id' in f and f['target'] != expected['destinations'].get(f['id']):
+            raise ValueError('Source text destination mismatch')
+    if meta.get('unwrapped_rows',[]) != expected['unwrapped_rows']:
+        raise ValueError('Layout table row classification mismatch')
+    if meta.get('legal_headings',[]) != expected['legal_headings']:
+        raise ValueError('Legal heading structure mismatch')
+    heading_fragments = [f for f in record['fragments'] if f.get('semantic')=='legal_heading']
+    if len(heading_fragments) != len(expected['legal_headings']):
+        raise ValueError('Generated legal heading missing')
+    for f,h in zip(heading_fragments,expected['legal_headings']):
+        if (f.get('level')!=h['level'] or f.get('title')!=h['title'] or
+                f['markup'] not in {'#'*h['level']+' ', '#'*h['level']+' '+escape(h['title'])+'\n\n'}):
+            raise ValueError('Generated legal heading mismatch')
+    if meta.get('references',[]) != expected['references']:
+        raise ValueError('Source note reference mismatch')
+    if expected['table'] and 'wrapped_table_fallback' not in record['issues'] and meta.get('table') != expected['table']:
+        raise ValueError('Source table grid mismatch')
+    numbered = [f for f in record['fragments'] if f.get('semantic') == 'numbering']
+    expected_labels = [(i,p) for i,p in enumerate(expected['paragraphs']) if p['label'] is not None]
+    if len(numbered) != len(expected_labels):
+        raise ValueError('Generated numbering marker missing or duplicated')
+    for actual,(index,p) in zip(numbered,expected_labels):
+        forms = {escape(p['label'])+' ', '    '*p['level']+'- **'+escape(p['label'])+'** '}
+        if actual.get('paragraph') != index or actual.get('label') != p['label'] or actual['markup'] not in forms or actual['target'] != p['target']:
+            raise ValueError('Generated numbering marker differs from source')
+    reference_fragments = [f for f in record['fragments'] if f.get('semantic') == 'note_reference']
+    if len(reference_fragments) != len(expected['references']):
+        raise ValueError('Generated note link missing')
+    for f,ref in zip(reference_fragments,expected['references']):
+        kind, identifier = ref['kind'],ref['id']
+        destination = 'supplementary.md' if kind=='comment' else ('candidate.md' if f['target']=='supplementary' else '')
+        if f.get('kind') != kind or f.get('note_id') != identifier or f['markup'] != f' [{kind} {escape(identifier)}]({destination}#{kind}-{quote(identifier)}) ':
+            raise ValueError('Generated note link differs from source')
+    note = expected['note']
+    if note:
+        for fragment in record['fragments']:
+            # Deletions/fields may intentionally move to the supplement; a normal
+            # note's ordinary text must not be moved wholesale by its numeric ID.
+            if 'id' in fragment and note['type'] != 'normal' and note['kind'] != 'comment' and fragment['target'] != 'supplementary':
+                raise ValueError('Separator note incorrectly included in body')
 
 
 def build_review(output: Path) -> None:
@@ -538,6 +796,7 @@ def convert(source: Path, output: Path, limits: Limits = Limits()) -> int:
         names = validate_package(z, limits)
         atom_count = inventory(z, db)
         structure = Structure(z)
+        expected_blocks = structural_expectations(z)
         for name in names:
             if name.startswith('word/media/') and not name.endswith('/'):
                 suffix = PurePosixPath(name).suffix.lower()
@@ -562,18 +821,16 @@ def convert(source: Path, output: Path, limits: Limits = Limits()) -> int:
                      part.startswith(('docProps/','word/theme/')))
             if not known:
                 issue_counts['additional_xml_part_retained_in_source'] += 1
-            default = 'candidate' if part in {'word/document.xml','word/footnotes.xml','word/endnotes.xml'} else 'supplementary'
             announced: set[str] = set()
             for node, ids, ancestors in blocks(z, part):
+                default = story_target(part,ancestors)
                 emitter = Emitter(z, part, ids, structure, assets, default, ancestors)
-                note = next(((tag.split('}')[1], attrs.get(W+'id','')) for tag, attrs in ancestors
-                             if tag in {W+'footnote', W+'endnote', W+'comment'}), None)
-                if note and note[1] in {'-1','0'} and note[0] != 'comment':
-                    emitter.default_target = 'supplementary'
-                key = '-'.join(note) if note else part
+                note = note_info(ancestors)
+                emitter.metadata['note'] = note
+                key = note['kind']+'-'+note['id'] if note else part
                 if key not in announced:
                     announced.add(key)
-                    title = f'{note[0]} {note[1]}' if note else part
+                    title = f'{note["kind"]} {note["id"]}' if note else part
                     if part != 'word/document.xml':
                         emitter.generated('\n\n## '+escape(title)+'\n\n')
                 record = emitter.block(node)
@@ -590,6 +847,7 @@ def convert(source: Path, output: Path, limits: Limits = Limits()) -> int:
                     context['list'] = {k:v for k,v in context['list'].items() if int(k)<level}
                     context['list'][str(level)] = marker['label']
                 record['metadata']['context'] = {'headings':dict(context['headings']), 'list':dict(context['list'])}
+                audit_structure(record,next(expected_blocks))
                 block_count += 1
                 record['block'] = block_count
                 if any(f['target'] == 'supplementary' and 'id' in f for f in record['fragments']):
@@ -610,12 +868,16 @@ def convert(source: Path, output: Path, limits: Limits = Limits()) -> int:
         missing = db.execute('SELECT count(*) FROM atoms WHERE used=0').fetchone()[0]
         if missing:
             raise ValueError(f'{missing} source atoms were not accounted for')
+        if next(expected_blocks,None) is not None:
+            raise ValueError('Missing structural source blocks')
     if not atom_count:
         issue_counts['no_recognized_text_requires_review'] += 1
     build_review(output)
     for filename in ['source.docx','candidate.md','supplementary.md','evidence.jsonl.gz','review.html']:
         hashes[filename] = digest(output/filename)
-    report = {'schema_version':1, 'format':'docx', 'status':'review_required', 'blocks':block_count,
+    blocking = {k:v for k,v in issue_counts.items() if k in BLOCKING_ISSUES}
+    report = {'schema_version':2, 'format':'docx', 'status':'blocked' if blocking else 'review_required', 'blocks':block_count,
+              'blocking_issues':blocking,
               'source_atoms':atom_count, 'source_characters_by_destination':dict(text_counts),
               'issues':dict(issue_counts), 'hashes':hashes,
               'limitations':'Text accounting is not proof of visual fidelity. No Word pagination is inferred.'}
@@ -624,8 +886,8 @@ def convert(source: Path, output: Path, limits: Limits = Limits()) -> int:
                'blocks':[{'block':i,'approved':False,'note':''} for i in range(1,block_count+1)]})
     (output/'RUNNING.json').unlink()
     dbpath.unlink()
-    LOG.info('Converted %d blocks; review_required: %s', block_count, output)
-    return 3
+    LOG.info('Converted %d blocks; %s: %s', block_count, report['status'], output)
+    return 2 if blocking else 3
 
 
 def verify(output: Path) -> dict[str, Any]:
@@ -643,6 +905,7 @@ def verify(output: Path) -> dict[str, Any]:
             (output/'candidate.md').open('rb') as candidate, (output/'supplementary.md').open('rb') as supplement:
         validate_package(z, Limits())
         total = inventory(z, db)
+        expected_blocks = structural_expectations(z)
         count = 0
         for line in evidence:
             record = json.loads(line)
@@ -650,6 +913,10 @@ def verify(output: Path) -> dict[str, Any]:
             if record['block'] != count:
                 raise ValueError('Nonsequential block identity')
             account(db, record)
+            expected = next(expected_blocks,None)
+            if expected is None:
+                raise ValueError('Extra output block')
+            audit_structure(record,expected)
             for target, stream in [('candidate',candidate),('supplementary',supplement)]:
                 payload = render(record,target).encode('utf-8')
                 if record[target+'_range'] != [stream.tell(),stream.tell()+len(payload)] or stream.read(len(payload)) != payload:
@@ -658,11 +925,15 @@ def verify(output: Path) -> dict[str, Any]:
             raise ValueError('Trailing content or counts mismatch')
         if db.execute('SELECT count(*) FROM atoms WHERE used=0').fetchone()[0]:
             raise ValueError('Unaccounted source atoms')
+        if next(expected_blocks,None) is not None:
+            raise ValueError('Missing structural source blocks')
     return report
 
 
 def release(output: Path, review_path: Path) -> None:
     report = verify(output)
+    if report.get('blocking_issues'):
+        raise ValueError('Unresolved structural content blocks release; repair the source or converter first')
     review = json.loads(review_path.read_text(encoding='utf-8'))
     if review.get('hashes') != report['hashes'] or not str(review.get('reviewer','')).strip():
         raise ValueError('Review identity/hash mismatch')

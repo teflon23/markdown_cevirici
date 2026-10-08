@@ -38,8 +38,9 @@ class DocxTests(unittest.TestCase):
 
     def run_doc(self, body: str, extras: dict[str, str | bytes] | None = None) -> tuple[str, str, dict]:
         source = package(self.root/'source.docx',body,extras)
-        self.assertEqual(convert(source,self.out),3)
+        status = convert(source,self.out)
         report = verify(self.out)
+        self.assertEqual(status,2 if report['blocking_issues'] else 3)
         return ((self.out/'candidate.md').read_text('utf-8'),
                 (self.out/'supplementary.md').read_text('utf-8'),report)
 
@@ -256,6 +257,74 @@ class DocxTests(unittest.TestCase):
         self.assertEqual(number(27,'upperLetter',issues),'AA')
         self.assertEqual(number(49,'lowerRoman',issues),'xlix')
         self.assertFalse(issues)
+
+    def numbered_fixture(self) -> tuple[str, dict[str,str]]:
+        props = '<w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>'
+        xml = f'<w:numbering xmlns:w="{W[1:-1]}"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>'
+        return props, {'word/numbering.xml':xml}
+
+    def test_table_numbering_continues_into_body(self) -> None:
+        props,extras = self.numbered_fixture()
+        table = '<w:tbl><w:tr><w:tc>'+paragraph('First',props)+'</w:tc></w:tr></w:tbl>'
+        md,_,_ = self.run_doc(table+paragraph('Second',props),extras)
+        self.assertIn('1. First',md)
+        self.assertIn('**2.** Second',md)
+
+    def test_generated_number_deletion_fails_even_with_new_hashes(self) -> None:
+        props,extras = self.numbered_fixture()
+        self.run_doc(paragraph('Item',props),extras)
+        records = self.records()
+        records[0]['fragments'] = [f for f in records[0]['fragments'] if f.get('semantic')!='numbering']
+        self.replace_evidence(records)
+        with self.assertRaisesRegex(ValueError,'numbering marker missing'):
+            verify(self.out)
+
+    def test_zero_note_id_is_not_separator(self) -> None:
+        extras = {'word/footnotes.xml':f'<w:footnotes xmlns:w="{W[1:-1]}"><w:footnote w:id="0">{paragraph("Ordinary note")}</w:footnote><w:footnote w:id="7" w:type="separator">{paragraph("Separator")}</w:footnote></w:footnotes>'}
+        md,sup,_ = self.run_doc(paragraph('Body'),extras)
+        self.assertIn('Ordinary note',md)
+        self.assertNotIn('Separator',md)
+        self.assertIn('Separator',sup)
+
+    def test_missing_note_blocks_release(self) -> None:
+        _,_,report = self.run_doc('<w:p><w:r><w:t>Body</w:t><w:footnoteReference w:id="9"/></w:r></w:p>')
+        self.assertEqual(report['status'],'blocked')
+        with self.assertRaisesRegex(ValueError,'structural content blocks'):
+            release(self.out,self.out/'review-template.json')
+
+    def test_bold_runs_join_and_spaces_stay_outside(self) -> None:
+        body = '<w:p>'+''.join(f'<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">{s}</w:t></w:r>' for s in [' Alpha',' ','Beta '])+'</w:p>'
+        md,_,_ = self.run_doc(body)
+        self.assertEqual(md,' **Alpha Beta** \n\n')
+
+    def test_turkish_captioned_article_and_chapter(self) -> None:
+        md,_,_ = self.run_doc(paragraph('BİRİNCİ BÖLÜM')+paragraph('Tanımlar MADDE 4- (1) İçerik'))
+        self.assertIn('# BİRİNCİ BÖLÜM',md)
+        self.assertIn('## MADDE 4\n',md)
+        self.assertIn('Tanımlar MADDE 4- (1) İçerik',md)
+
+    def test_layout_prose_row_unwraps(self) -> None:
+        row = '<w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr>'+paragraph('BİRİNCİ BÖLÜM')+paragraph('MADDE 1- (1) İçerik')+paragraph('Devam')+'</w:tc></w:tr>'
+        md,_,report = self.run_doc('<w:tbl>'+row+'</w:tbl>')
+        self.assertIn('\n## MADDE 1\n',md)
+        self.assertNotIn('| Column',md)
+        self.assertIn('full_width_prose_row_unwrapped_requires_review',report['issues'])
+
+    def test_table_geometry_tamper_fails(self) -> None:
+        self.run_doc('<w:tbl><w:tr><w:tc>'+paragraph('Cell')+'</w:tc></w:tr></w:tbl>')
+        records = self.records()
+        records[0]['metadata']['table']['columns'] = 2
+        self.replace_evidence(records)
+        with self.assertRaisesRegex(ValueError,'table grid mismatch'):
+            verify(self.out)
+
+    def test_heading_deletion_fails(self) -> None:
+        self.run_doc(paragraph('MADDE 1- (1) İçerik'))
+        records = self.records()
+        records[0]['fragments'] = [f for f in records[0]['fragments'] if f.get('semantic')!='legal_heading']
+        self.replace_evidence(records)
+        with self.assertRaisesRegex(ValueError,'legal heading missing'):
+            verify(self.out)
 
 
 if __name__ == '__main__':

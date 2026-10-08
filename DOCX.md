@@ -11,7 +11,7 @@ python docx_to_markdown.py verify "output\belge-docx-001"
 
 Çıktı klasörü yeni olmalıdır. Sanal ortam kullanılıyorsa `python` yerine `.\.venv\Scripts\python.exe` yazılabilir. PDF hattına ait `run.ps1` yerine DOCX betiğini doğrudan çalıştırın.
 
-Çıkış kodları: `0` teknik doğrulama veya kabul başarılı; `1` hata; `3` dönüşüm tamamlandı, anlamsal inceleme bekleniyor. Dönüşümün `3` dönmesi beklenen davranıştır. Hata halinde `RUNNING.json` kalır; tamamlanmamış çalışmayı kullanmayın.
+Çıkış kodları: `0` teknik doğrulama veya kabul başarılı; `1` hata; `2` dönüşüm kaydedildi ancak çözümlenmemiş yapısal içerik kabulü engelliyor; `3` dönüşüm tamamlandı, anlamsal inceleme bekleniyor. Dönüşümün `3` dönmesi beklenen davranıştır. Hata halinde `RUNNING.json` kalır; tamamlanmamış çalışmayı kullanmayın.
 
 ## Çıktılar
 
@@ -35,6 +35,11 @@ python docx_to_markdown.py verify "output\belge-docx-001"
 3. Paragraf ve tablolar özgün XML sırasıyla işlenir. Word'ün bir kelimeyi farklı run'lara bölmesi kelimeye fazladan boşluk eklenmesine yol açmaz. Metne yazım düzeltmesi, Unicode normalizasyonu veya tahmini tire birleştirmesi uygulanmaz.
 4. Her tanınan metin parçasının tam içeriği bir kez `candidate.md` veya `supplementary.md` hedefine atanmalıdır. Eksik, değiştirilmiş, yinelenmiş veya sırası değişmiş kaynak kimliği hata verir. Otomatik liste numaraları ve Markdown işaretleri üretilmiş içerik olarak ayrı tutulur.
 5. `verify` kaynağı yeniden açar, envanteri yeniden kurar, fragment içeriğini ve sırasını kontrol eder; üretilen Markdown baytlarını ve tüm kayıtlı hash'leri doğrular.
+6. İkinci yapısal geçiş paragraf/liste tanımlarını, hücre geometrisini, not kimliklerini, metin hedeflerini ve üretilen hukuki başlıkları kaynak XML ile karşılaştırır. Tablo içindeki otomatik liste numaraları da denetlenir. Bu geçiş sayı biçimi çözümleyicisini paylaşır; bağımsız bir Word renderer değildir. Sentetik testler beklenen numara ve başlıkları ayrıca kontrol eder.
+
+Türkçe `BÖLÜM`, `MADDE`, `GEÇİCİ MADDE` ve `EK MADDE` yapıları için başlıklar eklenir; kaynak paragraf değiştirilmez. Kısa başlıkla aynı paragraftaki `MADDE …- (1)` biçimi de tanınır. Tek hücresi tüm sütunlara yayılan, en az üç paragraf ve hukuki başlık içeren tablo satırı metin düzeni olarak açılır; bu sezgisel karar raporda incelemeye işaretlenir. Kısa birleşik hücreler tablo olarak kalır. Bitişik aynı biçimli kalın/italik run'lar birleştirilir ve sınır boşlukları biçim işaretlerinin dışında korunur.
+
+Normal dipnotun kimliği `0` olabilir; ayraç olup olmadığı `w:type` ile belirlenir. Kırık not referansları, çözülemeyen numaralandırma ve desteklenmeyen bazı yapılar `blocking_issues` altında gösterilir. Bu durumlarda insan onayı tek başına `release` işlemini açmaz; kaynak veya dönüştürücü düzeltilmelidir.
 
 Bu kontroller **tanınan XML metninin muhasebesini** doğrular; Word'ün görsel anlamının kayıpsız Markdown'a aktarıldığını kanıtlamaz. Tanınmayan XML/ikili içerik kaynak DOCX'te korunur ve ek parça uyarısıyla incelemeye bırakılır. Rapor ve hash'ler kriptografik imzalı bir güven sistemi değildir.
 
