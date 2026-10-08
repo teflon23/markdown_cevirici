@@ -1,6 +1,8 @@
-# Yerel PDF → Markdown ve doğrulama hattı
+# Yerel PDF ve DOCX → Markdown ve doğrulama hattı
 
 Tamamen yerel çalışır. Ağ istemcisi, bulut API'si, model indirme veya LLM ile metin düzeltme içermez. PDF içindeki metinler veri olarak işlenir; talimat olarak yürütülmez. Qwen 8B gerektirmez; çıktıyı daha sonra yerel RAG sisteminize verebilirsiniz.
+
+**DOCX desteği:** [docx_to_markdown.py](docx_to_markdown.py) bağımsız çalışır ve yalnızca Python standart kütüphanesini kullanır. DOCX için paket kurulumu gerekmez. Ayrıntılar: [DOCX kullanım ve doğrulama rehberi](DOCX.md). Aşağıdaki PDF komutları ve `build_review.py` PDF hattına aittir; DOCX kendi `review.html` ekranını üretir.
 
 **Önemli sınır:** PDF'nin görsel anlamının yüzde yüz korunduğu otomatik olarak kanıtlanamaz. Bu araç kaynak metin katmanındaki kelimelerin muhasebesini kanıtlar, geometrik okumayı denetler ve insan incelemesi olmadan `ready.md` oluşturmaz. Kelime sayılarının eşit olması, tablo ilişkilerinin veya okuma sırasının doğru olduğunu tek başına göstermez.
 

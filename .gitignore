@@ -8,6 +8,11 @@ inputs/
 documents/
 *.pdf
 *.PDF
+*.docx
+*.DOCX
+*.docm
+*.DOCM
+*.sqlite3
 *.png
 *.jpg
 *.jpeg
