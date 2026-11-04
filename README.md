@@ -118,3 +118,22 @@ Bu betik LangChain bağımlılığı yüklemez. Küçük Qwen modelleri için ba
 ## Depo içeriği
 
 Depo yalnızca uygulama kodu, sentetik birim testleri, bağımlılık listesi ve kullanım belgesini içerir. Kaynak PDF'ler, sayfa görselleri, dönüşüm çıktıları ve yerel denetim kayıtları `.gitignore` ile hariç tutulur.
+Burak Avcı Bey'i de metne özel olarak dahil ettiğim güncellenmiş e-posta taslağını aşağıda bulabilirsin:
+
+---
+
+**Konu:** Staj Süreci Geri Bildirimi ve Teşekkür - Berat Emiroğlu
+
+Merhaba,
+
+Yapı Kredi Teknoloji bünyesinde gerçekleştirdiğim 11 aylık staj sürecimin sonuna yaklaşırken, bu değerli deneyime dair geri bildirimlerimi ve teşekkürlerimi paylaşmak istedim.
+
+Geride bıraktığım bu 11 ay benim için kelimenin tam anlamıyla dolu dolu geçti ve kariyer yolculuğuma gerçek anlamda dokunan, unutulmaz bir deneyim oldu. Burada bulunduğum süre boyunca çok güçlü bir mühendislik vizyonu, teknik yetkinlik ve pratik bilgi birikimi kazandım.
+
+Bu süreçte bana her zaman yol gösteren, bilgi ve tecrübelerini hiç çekinmeden paylaşarak gelişimime büyük katkı sağlayan değerli yöneticim **Murat Özkul**'a ve mentorum **Atilla Özbek**'e çok teşekkür ederim. Ayrıca staj sürecimiz boyunca bizlerle yakından ilgilenen ve hayatımıza dokunan biri olarak **Burak Avcı** Bey'e ve desteğini her an hissettiğim tüm **Yapı Kredi ailesine** gönülden teşekkürlerimi sunarım. Büyük bir keyif ve gururla parçası olduğum bu çalışma ortamı, mesleki hayatımda her zaman çok özel bir yere sahip olacak.
+
+Bana kattığınız her şey için tekrar çok teşekkür ederim.
+
+Saygılarımla,
+
+**Berat Emiroğlu**
