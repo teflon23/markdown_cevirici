@@ -118,7 +118,5 @@ Bu betik LangChain bağımlılığı yüklemez. Küçük Qwen modelleri için ba
 ## Depo içeriği
 
 Depo yalnızca uygulama kodu, sentetik birim testleri, bağımlılık listesi ve kullanım belgesini içerir. Kaynak PDF'ler, sayfa görselleri, dönüşüm çıktıları ve yerel denetim kayıtları `.gitignore` ile hariç tutulur.
-Burak Avcı Bey'i de metne özel olarak dahil ettiğim güncellenmiş e-posta taslağını aşağıda bulabilirsin:
-
----
+Murat Abi selam, nasılsın? Bildiğin gibi buradaki staj sözleşmem 27 Kasım'da bitiyor. Sözleşme bitişi yaklaştığı için yeni bir şirketle görüşmüştüm, oradan kabul aldım ama 23 Kasım Pazartesi başlamamı istiyorlar.   Senin için ve işlerimiz açısından bir sıkıntı olmazsa, çıkışımı 1 hafta erkene çekip 20 Kasım Cuma günü ayrılabilir miyim? İK ile de konuştum; işlemin tamamlanması için senin İpek Öztek'e 20 Kasım'da ayrılışımın uygun olduğuna dair kısa bir onay maili atman gerekiyormuş.   Eğitimde olduğun için bölmek istemedim, o yüzden mesajla ilettim. Müsait olduğunda istersen arayabilirim de abi. Şimdiden çok teşekkür ederim.
 
